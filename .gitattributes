@@ -1,0 +1,4 @@
+# The server builds and runs on Linux (and inside Linux containers), so keep
+# LF in the working tree regardless of the host platform. CRLF in shell
+# scripts or container entrypoints fails at runtime with "bad interpreter".
+* text=auto eol=lf

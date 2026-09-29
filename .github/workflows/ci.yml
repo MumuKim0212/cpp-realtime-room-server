@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: rrs
+          POSTGRES_DB: rrs
+        ports:
+          - 5432:5432
+        # Over TCP, for the same reason as in docker-compose.yml: during
+        # initialisation the image runs a temporary server on the Unix socket
+        # only, and a socket check would pass before TCP is listening.
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 15
+
+    env:
+      RRS_TEST_DATABASE_URL: host=127.0.0.1 port=5432 user=postgres password=rrs dbname=rrs
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              build-essential cmake pkg-config libsodium-dev libpq-dev postgresql-client
+
+      - name: Load the schema
+        run: psql "$RRS_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f docker/schema.sql
+
+      - name: Build
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build -j "$(nproc)"
+
+      # GoogleTest counts a skipped test as passed, so a database the tests
+      # could not reach would turn every end-to-end test into a quiet pass.
+      # Any skip fails the run instead. The check reads GoogleTest's own
+      # "[  SKIPPED ]" line, which -V keeps in the log, rather than relying on
+      # how this CMake version reports a skip.
+      - name: Test
+        shell: bash
+        run: |
+          ctest --test-dir build --output-on-failure -V > ctest.log 2>&1 || { cat ctest.log; exit 1; }
+          tail -n 20 ctest.log
+          if grep -qF "[  SKIPPED ]" ctest.log; then
+            grep -F "[  SKIPPED ]" ctest.log
+            echo "Some tests were skipped; the database tests must run in CI."
+            exit 1
+          fi
+
+  docker:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -f docker/Dockerfile .

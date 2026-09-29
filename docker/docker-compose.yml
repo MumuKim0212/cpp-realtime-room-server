@@ -1,0 +1,44 @@
+# Redis is deliberately absent. Nothing here needs it -- the session map lives
+# in the event loop's own memory -- until a ranking or cross-server pub/sub
+# arrives that actually does.
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: rrs
+      POSTGRES_PASSWORD: rrs
+      POSTGRES_DB: rrs
+    volumes:
+      # Runs once, on the first start against an empty data directory. Drop the
+      # volume to re-seed.
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # Over TCP on purpose. While the image runs schema.sql it starts a
+      # temporary server that listens on the Unix socket alone, and a check on
+      # the socket would pass then -- letting the server in below connect over
+      # TCP to a database that is not listening there yet.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U rrs -d rrs"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  server:
+    build:
+      # The build needs CMakeLists.txt and src/, which sit above this file.
+      context: ..
+      dockerfile: docker/Dockerfile
+    environment:
+      RRS_DATABASE_URL: "host=postgres port=5432 user=rrs password=rrs dbname=rrs"
+    ports:
+      - "9000:9000"
+    depends_on:
+      postgres:
+        # Not just "started". The server opens every one of its database
+        # connections before it listens and gives up if one fails, so coming up
+        # first would be a crash rather than a retry.
+        condition: service_healthy
+
+volumes:
+  postgres-data:
